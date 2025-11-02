@@ -1,0 +1,6 @@
+.env
+*.pem
+*.key
+.supabase/
+node_modules/
+.DS_Store
