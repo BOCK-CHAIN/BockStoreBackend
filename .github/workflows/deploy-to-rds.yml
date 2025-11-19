@@ -16,11 +16,20 @@ jobs:
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
+      - name: Debug secrets (safe output)
+        run: |
+          echo "HOST=${{ secrets.RDS_HOST }}"
+          echo "PORT=${{ secrets.RDS_PORT }}"
+          echo "DB=${{ secrets.RDS_DB }}"
+          echo "USER=${{ secrets.RDS_USER }}"
+
       - name: Apply schema to RDS
         env:
           PGPASSWORD: ${{ secrets.RDS_PASSWORD }}
         run: |
-          echo "Deploying schema to RDS..."
-          psql "host=${{ secrets.RDS_HOST }} port=5432 dbname=${{ secrets.RDS_DB }} user=${{ secrets.RDS_USER }}" \
+          psql \
+            "host=${{ secrets.RDS_HOST }} \
+             port=${{ secrets.RDS_PORT }} \
+             dbname=${{ secrets.RDS_DB }} \
+             user=${{ secrets.RDS_USER }}" \
             -f supabase/migrations/00000000000001_initial_schema.sql
-          echo "Done."
