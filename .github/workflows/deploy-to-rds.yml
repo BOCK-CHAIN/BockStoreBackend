@@ -1,0 +1,26 @@
+name: Deploy Schema to RDS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply schema to RDS
+        env:
+          PGPASSWORD: ${{ secrets.RDS_PASSWORD }}
+        run: |
+          echo "Deploying schema to RDS..."
+          psql "host=${{ secrets.RDS_HOST }} port=5432 dbname=${{ secrets.RDS_DB }} user=${{ secrets.RDS_USER }}" \
+            -f supabase/migrations/00000000000001_initial_schema.sql
+          echo "Done."
