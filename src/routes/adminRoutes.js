@@ -19,9 +19,7 @@ router.post(
   upload.fields([
     { name: "icon", maxCount: 1 },
     { name: "screenshots", maxCount: 5 },
-    { name: "apk", maxCount: 1 },
-    { name: "windows", maxCount: 1 },
-    { name: "linux", maxCount: 1 },
+    { name: "files", maxCount: 10 },
   ]),
   createApp,
 );
@@ -33,9 +31,7 @@ router.put(
   upload.fields([
     { name: "icon", maxCount: 1 },
     { name: "screenshots", maxCount: 5 },
-    { name: "apk", maxCount: 1 },
-    { name: "windows", maxCount: 1 },
-    { name: "linux", maxCount: 1 },
+    { name: "files", maxCount: 10 },
   ]),
   updateApp,
 );
@@ -44,11 +40,7 @@ router.put(
   "/apps/:id/upload",
   authenticate,
   authorize("admin"),
-  upload.fields([
-    { name: "apk", maxCount: 1 },
-    { name: "windows", maxCount: 1 },
-    { name: "linux", maxCount: 1 },
-  ]),
+  upload.fields([{ name: "files", maxCount: 10 }]),
   uploadAppFiles,
 );
 

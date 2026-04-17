@@ -159,30 +159,23 @@ async function deleteAccount(req, res) {
     });
   }
 }
-//get hex id function
-async function getHexId(req, res) {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ error: "Email is required." });
-  }
-
+async function getUserByName(req, res) {
   try {
-    const { rows } = await pool.query(
-      "SELECT hex_id FROM users WHERE email = $1",
-      [email],
+    const { name } = req.params;
+
+    const result = await pool.query(
+      "SELECT name, bio FROM users WHERE name = $1",
+      [name],
     );
 
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "User not found." });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
     }
 
-    return res.status(200).json({
-      hex_id: rows[0].hex_id,
-    });
+    res.json(result.rows[0]);
   } catch (err) {
-    console.error("Fetch hex id error:", err);
-    return res.status(500).json({ error: "Internal server error." });
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 }
 
@@ -191,5 +184,5 @@ module.exports = {
   login,
   updateProfileImage,
   deleteAccount,
-  getHexId,
+  getUserByName,
 };

@@ -1,47 +1,155 @@
 const db = require("../config/db");
+const path = require("path");
+
+function detectFileType(url = "") {
+  const ext = path.extname(url).toLowerCase().replace(".", "");
+  const typeMap = {
+    apk: "apk",
+    exe: "exe",
+    sh: "sh",
+    zip: "zip",
+    dmg: "dmg",
+    deb: "deb",
+    rpm: "rpm",
+  };
+  return typeMap[ext] || "other";
+}
+
+/**
+ * File types that represent a platform-native installer and should be
+ * tracked as an "installation" in user_apps.
+ *
+ * zip / other are intentionally excluded because they are generic archives
+ * that do not map cleanly to an installed application.
+ */
+const INSTALLABLE_TYPES = new Set(["apk", "exe", "sh", "deb", "rpm", "dmg"]);
+
+/**
+ * Builds the files array and marks older versions of each file type as `is_old: true`.
+ * The most recently uploaded file per type (determined by `id` desc, or `created_at`
+ * if available) is considered current. All others of the same type are marked old.
+ * Files are sorted so the latest per type comes first, followed by old versions.
+ */
+function buildFilesArray(appRow, appFileRows = []) {
+  const files = [];
+
+  for (const f of appFileRows) {
+    files.push({
+      id: f.id,
+      url: f.url,
+      type: f.type || detectFileType(f.url),
+      label: f.label || f.url,
+      // Use created_at if present, otherwise fall back to id for ordering
+      _sortKey: f.created_at ? new Date(f.created_at).getTime() : f.id,
+    });
+  }
+
+  // Backward-compat: fold legacy columns in only when no app_files rows exist
+  if (files.length === 0) {
+    const legacy = [
+      { url: appRow.android_url, label: "Android APK" },
+      { url: appRow.apk_url, label: "Android APK (legacy)" },
+      { url: appRow.windows_url, label: "Windows Installer" },
+      { url: appRow.linux_url, label: "Linux Package" },
+    ];
+    for (const { url, label } of legacy) {
+      if (url) {
+        files.push({
+          id: null,
+          url,
+          type: detectFileType(url),
+          label,
+          _sortKey: 0,
+        });
+      }
+    }
+    // Legacy files have no versioning concept — none are marked old
+    return files.map(({ _sortKey, ...f }) => ({ ...f, is_old: false }));
+  }
+
+  // Find the latest _sortKey per type — that file is "current"
+  const latestKeyByType = {};
+  for (const f of files) {
+    if (
+      latestKeyByType[f.type] === undefined ||
+      f._sortKey > latestKeyByType[f.type]
+    ) {
+      latestKeyByType[f.type] = f._sortKey;
+    }
+  }
+
+  // Annotate each file and sort: latest per type first, then old versions
+  const annotated = files.map((f) => ({
+    id: f.id,
+    url: f.url,
+    type: f.type,
+    label: f.label,
+    is_old: f._sortKey < latestKeyByType[f.type],
+    _sortKey: f._sortKey,
+  }));
+
+  // Sort: current files (is_old=false) before old, then by sortKey desc within each group
+  annotated.sort((a, b) => {
+    if (a.is_old !== b.is_old) return a.is_old ? 1 : -1;
+    return b._sortKey - a._sortKey;
+  });
+
+  return annotated.map(({ _sortKey, ...f }) => f);
+}
 
 exports.getAllApps = async (req, res) => {
   try {
     const { search } = req.query;
-
     const userId = req.user?.id || null;
 
     let query = `
-  SELECT 
-    a.*,
-    user_apps.installed_version_code,
-    ROUND(AVG(r.rating)::NUMERIC, 2) AS average_rating,
-    COUNT(r.id)::INTEGER             AS total_reviews
-  FROM apps a
-  LEFT JOIN ratings r ON r.app_id = a.id
-  LEFT JOIN user_apps 
-    ON user_apps.app_id = a.id 
-    AND user_apps.user_id = $1
-`;
-
-    let values = [userId];
+      SELECT
+        a.*,
+        user_apps.installed_version_code,
+        ROUND(AVG(r.rating)::NUMERIC, 2) AS average_rating,
+        COUNT(r.id)::INTEGER             AS total_reviews
+      FROM apps a
+      LEFT JOIN ratings   r        ON r.app_id       = a.id
+      LEFT JOIN user_apps          ON user_apps.app_id = a.id
+                                   AND user_apps.user_id = $1
+    `;
+    const values = [userId];
 
     if (search) {
-      query += `
-    WHERE a.name ILIKE $2
-    OR a.developer ILIKE $2
-  `;
+      query += ` WHERE a.name ILIKE $2 OR a.developer ILIKE $2`;
       values.push(`%${search}%`);
     }
 
     query += `
-  GROUP BY a.id, user_apps.installed_version_code
-  ORDER BY a.id DESC
-`;
+      GROUP BY a.id, user_apps.installed_version_code
+      ORDER BY a.id DESC
+    `;
 
-    const result = await db.query(query, values);
+    const appsResult = await db.query(query, values);
 
-    const apps = result.rows.map((app) => ({
+    const appIds = appsResult.rows.map((r) => r.id);
+    let filesByAppId = {};
+    if (appIds.length > 0) {
+      const filesResult = await db.query(
+        `SELECT * FROM app_files WHERE app_id = ANY($1::int[]) ORDER BY id`,
+        [appIds],
+      );
+      for (const row of filesResult.rows) {
+        (filesByAppId[row.app_id] ??= []).push(row);
+      }
+    }
+
+    const apps = appsResult.rows.map((app) => ({
       ...app,
       average_rating: app.average_rating
         ? parseFloat(app.average_rating)
         : null,
       total_reviews: app.total_reviews || 0,
+      files: buildFilesArray(app, filesByAppId[app.id] || []),
+      android_url: undefined,
+      apk_url: undefined,
+      windows_url: undefined,
+      linux_url: undefined,
     }));
 
     res.json(apps);
@@ -54,11 +162,10 @@ exports.getAllApps = async (req, res) => {
 exports.getAppById = async (req, res) => {
   try {
     const { id } = req.params;
-    let installed_version_code = null;
 
     const appResult = await db.query(
       `
-      SELECT 
+      SELECT
         a.*,
         ROUND(AVG(r.rating)::NUMERIC, 2) AS average_rating,
         COUNT(r.id)::INTEGER             AS total_reviews
@@ -74,90 +181,98 @@ exports.getAppById = async (req, res) => {
       return res.status(404).json({ error: "App not found" });
     }
 
-    const imagesResult = await db.query(
-      "SELECT image_url FROM app_images WHERE app_id = $1",
-      [id],
-    );
-    const ratingDist = await db.query(
-      `
-      SELECT rating, COUNT(*)::INTEGER as count
-      FROM ratings
-      WHERE app_id = $1
-      GROUP BY rating
-      `,
-      [id],
-    );
+    const [imagesResult, ratingDist, filesResult] = await Promise.all([
+      db.query("SELECT image_url FROM app_images WHERE app_id = $1", [id]),
+      db.query(
+        `SELECT rating, COUNT(*)::INTEGER AS count FROM ratings WHERE app_id = $1 GROUP BY rating`,
+        [id],
+      ),
+      db.query("SELECT * FROM app_files WHERE app_id = $1 ORDER BY id", [id]),
+    ]);
 
+    let installed_version_code = null;
     if (req.user) {
       const userAppResult = await db.query(
-        `
-    SELECT installed_version_code 
-    FROM user_apps 
-    WHERE user_id = $1 AND app_id = $2
-    `,
+        `SELECT installed_version_code FROM user_apps WHERE user_id = $1 AND app_id = $2`,
         [req.user.id, id],
       );
-
       if (userAppResult.rows.length > 0) {
         installed_version_code = userAppResult.rows[0].installed_version_code;
       }
     }
 
+    const appRow = appResult.rows[0];
+
     res.json({
-      ...appResult.rows[0],
-      installed_version_code, //
-      average_rating: appResult.rows[0].average_rating
-        ? parseFloat(appResult.rows[0].average_rating)
+      ...appRow,
+      android_url: undefined,
+      apk_url: undefined,
+      windows_url: undefined,
+      linux_url: undefined,
+      installed_version_code,
+      average_rating: appRow.average_rating
+        ? parseFloat(appRow.average_rating)
         : null,
-      total_reviews: appResult.rows[0].total_reviews || 0,
+      total_reviews: appRow.total_reviews || 0,
       screenshots: imagesResult.rows.map((r) => r.image_url),
       rating_distribution: ratingDist.rows,
+      files: buildFilesArray(appRow, filesResult.rows),
     });
   } catch (err) {
     console.error("GET APP ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
-const path = require("path");
 
 exports.downloadApp = async (req, res) => {
   try {
     const { id } = req.params;
+    const { file_id, platform } = req.query;
 
-    const result = await db.query(
-      "SELECT apk_url, android_url, windows_url, linux_url, version_code FROM apps WHERE id = $1",
+    const appResult = await db.query(
+      "SELECT id, version_code, android_url, apk_url, windows_url, linux_url FROM apps WHERE id = $1",
+      [id],
+    );
+    if (appResult.rows.length === 0) {
+      return res.status(404).json({ error: "App not found" });
+    }
+
+    const appRow = appResult.rows[0];
+    const filesResult = await db.query(
+      "SELECT * FROM app_files WHERE app_id = $1 ORDER BY id",
       [id],
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "App not found" });
+    const allFiles = buildFilesArray(appRow, filesResult.rows);
+    if (allFiles.length === 0) {
+      return res.status(404).json({ error: "No downloadable files available" });
     }
-    const allowedPlatforms = ["android", "windows", "linux"];
-    const platform = allowedPlatforms.includes(req.query.platform)
-      ? req.query.platform
-      : "android";
-    const { apk_url, android_url, windows_url, linux_url, version_code } =
-      result.rows[0];
 
-    let download_url;
-    switch (platform) {
-      case "android":
-        download_url = android_url || apk_url;
-        break;
-      case "windows":
-        download_url = windows_url;
-        break;
-      case "linux":
-        download_url = linux_url;
-        break;
-      default:
+    let chosen = null;
+
+    if (file_id) {
+      chosen = allFiles.find((f) => String(f.id) === String(file_id));
+      if (!chosen) {
+        return res.status(404).json({ error: "File not found" });
+      }
+    } else if (platform) {
+      const platformTypeMap = { android: "apk", windows: "exe", linux: "sh" };
+      const targetType = platformTypeMap[platform];
+      if (!targetType) {
         return res.status(400).json({ error: "Invalid platform" });
+      }
+      // Prefer the latest (non-old) file of the target type
+      chosen =
+        allFiles.find((f) => f.type === targetType && !f.is_old) ||
+        allFiles.find((f) => f.type === targetType) ||
+        allFiles[0];
+    } else {
+      // Default: pick the first non-old file
+      chosen = allFiles.find((f) => !f.is_old) || allFiles[0];
     }
 
-    if (!download_url) {
-      return res.status(404).json({
-        error: `${platform.charAt(0).toUpperCase() + platform.slice(1)} version not available`,
-      });
+    if (!chosen?.url) {
+      return res.status(404).json({ error: "Download URL not available" });
     }
 
     await db.query(
@@ -165,27 +280,37 @@ exports.downloadApp = async (req, res) => {
       [id],
     );
 
-    if (req.user && platform === "android") {
+    // --- CHANGED: Track installation for all platform-native installer types,
+    //     not just APK. INSTALLABLE_TYPES covers apk, exe, sh, deb, rpm, dmg.
+    //     zip and "other" are intentionally excluded as they are not installers.
+    if (req.user && INSTALLABLE_TYPES.has(chosen.type)) {
       await db.query(
         `INSERT INTO user_apps (user_id, app_id, installed_version_code)
-         VALUES ($1,$2,$3)
+         VALUES ($1, $2, $3)
          ON CONFLICT (user_id, app_id)
          DO UPDATE SET installed_version_code = $3`,
-        [req.user.id, id, version_code],
+        [req.user.id, id, appRow.version_code],
       );
     }
+    // --- END CHANGED
 
     return res.json({
-      download_url: `${process.env.BASE_URL}${download_url}`,
+      download_url: `${process.env.BASE_URL}${chosen.url}`,
+      file: {
+        id: chosen.id,
+        type: chosen.type,
+        label: chosen.label,
+        is_old: chosen.is_old,
+      },
     });
   } catch (err) {
     console.error("DOWNLOAD ERROR:", err);
     res.status(500).json({ error: "Download failed" });
   }
 };
+
 async function getMyApps(req, res) {
   const userId = req.user.id;
-
   try {
     const { rows } = await db.query(
       `
@@ -197,17 +322,18 @@ async function getMyApps(req, res) {
       `,
       [userId],
     );
-
     res.json(rows);
   } catch (err) {
     console.error("GET MY APPS ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 }
+exports.getMyApps = getMyApps;
+
 exports.getUserActivity = async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT 
+      SELECT
         apps.name AS app_name,
         app_logs.action,
         app_logs.version,
@@ -218,13 +344,13 @@ exports.getUserActivity = async (req, res) => {
       ORDER BY app_logs.created_at DESC
       LIMIT 20
     `);
-
     res.json(result.rows);
   } catch (err) {
     console.error("USER ACTIVITY ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
+
 exports.uninstallApp = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -245,4 +371,34 @@ exports.uninstallApp = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-exports.getMyApps = getMyApps;
+
+async function getDeveloper(req, res) {
+  try {
+    const name = req.query.name;
+    if (!name) return res.status(400).json({ error: "Name required" });
+
+    const result = await db.query(
+      "SELECT name, bio FROM developers WHERE name = $1",
+      [name],
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ name, bio: null });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+module.exports = {
+  getAllApps: exports.getAllApps,
+  getAppById: exports.getAppById,
+  downloadApp: exports.downloadApp,
+  getMyApps: exports.getMyApps,
+  getUserActivity: exports.getUserActivity,
+  uninstallApp: exports.uninstallApp,
+  getDeveloper,
+};

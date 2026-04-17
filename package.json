@@ -12,13 +12,17 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1031.0",
     "bcrypt": "^6.0.0",
+    "cloudinary": "^2.9.0",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "jsonwebtoken": "^9.0.3",
-    "multer": "^2.0.2",
-    "pg": "^8.18.0"
+    "multer": "^2.1.1",
+    "pg": "^8.18.0",
+    "streamifier": "^0.1.1",
+    "uuid": "^13.0.0"
   }
 }

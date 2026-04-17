@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 
+// Protect routes (authentication required)
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
 
@@ -17,6 +18,7 @@ function authenticate(req, res, next) {
   }
 }
 
+// Restrict access based on roles
 function authorize(...roles) {
   return (req, res, next) => {
     if (!req.user || !roles.includes(req.user.role)) {
@@ -27,42 +29,24 @@ function authorize(...roles) {
     next();
   };
 }
-exports.optionalAuth = (req, res, next) => {
+
+// Optional authentication (used for public routes)
+function optionalAuth(req, res, next) {
   const header = req.headers.authorization;
 
-  if (!header) {
+  if (!header || !header.startsWith("Bearer ")) {
     return next();
   }
 
   const token = header.split(" ")[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-  } catch (err) {
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
     req.user = null;
   }
 
   next();
-};
-
-const optionalAuth = (req, res, next) => {
-  const header = req.headers.authorization;
-
-  if (!header) {
-    return next();
-  }
-
-  const token = header.split(" ")[1];
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-  } catch (err) {
-    req.user = null;
-  }
-
-  next();
-};
+}
 
 module.exports = { authenticate, authorize, optionalAuth };

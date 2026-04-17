@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const uploadToS3 = require("../utils/uploadToS3");
 
 exports.createApp = async (req, res) => {
   try {
@@ -12,15 +13,15 @@ exports.createApp = async (req, res) => {
       package_name,
       version_code,
       category,
+      bio,
     } = req.body;
 
     console.log(req.body);
 
     const icon = req.files?.icon?.[0];
     const screenshots = req.files?.screenshots || [];
-    const apk = req.files?.apk?.[0];
-    const windows = req.files?.windows?.[0];
-    const linux = req.files?.linux?.[0];
+    // All binaries come through the "files" field — multer only accepts this fieldname
+    const uploadedFiles = req.files?.files || [];
 
     if (!name || !icon || !package_name || !version_code) {
       return res.status(400).json({
@@ -28,27 +29,12 @@ exports.createApp = async (req, res) => {
       });
     }
 
-    const iconUrl = `/uploads/icons/${icon.filename}`;
+    const iconUrl = await uploadToS3(icon, "icons");
 
-    let androidUrl = null;
-    let windowsUrl = null;
-    let linuxUrl = null;
-
-    if (apk) {
-      androidUrl = `/uploads/apks/${apk.filename}`;
-    }
-
-    if (windows) {
-      windowsUrl = `/uploads/windows/${windows.filename}`;
-    }
-
-    if (linux) {
-      linuxUrl = `/uploads/linux_apps/${linux.filename}`;
-    }
     const appResult = await db.query(
       `INSERT INTO apps 
-   (name, description, icon_url, version, size, developer, rated_for, android_url, windows_url, linux_url, package_name, version_code, category) 
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) 
+   (name, description, icon_url, version, size, developer, rated_for, package_name, version_code, category) 
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) 
    RETURNING *`,
       [
         name,
@@ -58,9 +44,6 @@ exports.createApp = async (req, res) => {
         size,
         developer,
         rated_for,
-        androidUrl,
-        windowsUrl,
-        linuxUrl,
         package_name,
         version_code,
         category,
@@ -68,6 +51,59 @@ exports.createApp = async (req, res) => {
     );
 
     const appId = appResult.rows[0].id;
+
+    // ── Developer insert/update (bio support) ──────────────────────────────
+    if (developer) {
+      if (bio && bio.trim().length > 0) {
+        await db.query(
+          `INSERT INTO developers (name, bio)
+           VALUES ($1, $2)
+           ON CONFLICT (name)
+           DO UPDATE SET bio = EXCLUDED.bio`,
+          [developer, bio.trim()],
+        );
+      } else {
+        await db.query(
+          `INSERT INTO developers (name)
+           VALUES ($1)
+           ON CONFLICT (name) DO NOTHING`,
+          [developer],
+        );
+      }
+    }
+
+    // ── Insert each uploaded file into app_files ───────────────────────────
+    if (uploadedFiles.length > 0) {
+      const detectFileType = (filename) => {
+        const ext = filename.split(".").pop().toLowerCase();
+        if (ext === "apk") return "apk";
+        if (ext === "exe" || ext === "msi") return "exe";
+        if (ext === "sh") return "sh";
+        if (ext === "deb") return "deb";
+        if (ext === "rpm") return "rpm";
+        if (ext === "appimage") return "appimage";
+        if (ext === "dmg") return "dmg";
+        if (ext === "zip") return "zip";
+        return "other";
+      };
+
+      // file_labels and file_types sent as indexed fields from Flutter
+      const fileLabels = req.body.file_labels || {};
+      const fileTypes = req.body.file_types || {};
+
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const file = uploadedFiles[i];
+        const fileUrl = await uploadToS3(file, "apps");
+        const type = fileTypes[i] || detectFileType(file.originalname);
+        const label = fileLabels[i] || file.originalname;
+
+        await db.query(
+          `INSERT INTO app_files (app_id, url, type, label)
+           VALUES ($1, $2, $3, $4)`,
+          [appId, fileUrl, type, label],
+        );
+      }
+    }
 
     await db.query(
       `INSERT INTO app_logs (app_id, user_id, action, version)
@@ -77,7 +113,7 @@ exports.createApp = async (req, res) => {
 
     for (let i = 0; i < screenshots.length; i++) {
       const img = screenshots[i];
-      const imageUrl = `/uploads/screenshots/${img.filename}`;
+      const imageUrl = await uploadToS3(img, "screenshots");
 
       await db.query(
         "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
@@ -135,9 +171,7 @@ exports.updateApp = async (req, res) => {
 
     const icon = req.files?.icon?.[0];
     const screenshots = req.files?.screenshots || [];
-    const apk = req.files?.apk?.[0];
-
-    const isApkUploaded = !!apk;
+    const uploadedFiles = req.files?.files || [];
 
     const existing = await db.query("SELECT * FROM apps WHERE id = $1", [id]);
 
@@ -147,16 +181,13 @@ exports.updateApp = async (req, res) => {
 
     let iconUrl = existing.rows[0].icon_url;
     if (icon) {
-      iconUrl = `/uploads/icons/${icon.filename}`;
+      iconUrl = await uploadToS3(icon, "icons");
     }
 
-    let apkUrl = existing.rows[0].apk_url;
-    if (apk) {
-      apkUrl = `/uploads/apks/${apk.filename}`;
-    }
+    const hasNewFiles = uploadedFiles.length > 0;
 
     let newVersionCode = existing.rows[0].version_code;
-    if (isApkUploaded) {
+    if (hasNewFiles) {
       newVersionCode = newVersionCode + 1;
     }
 
@@ -169,10 +200,9 @@ exports.updateApp = async (req, res) => {
            size = COALESCE($5, size),
            developer = COALESCE($6, developer),
            rated_for = COALESCE($7, rated_for),
-           apk_url = $8,
-           package_name = COALESCE($9, package_name),
-           version_code = $10
-       WHERE id = $11
+           package_name = COALESCE($8, package_name),
+           version_code = $9
+       WHERE id = $10
        RETURNING *`,
       [
         name,
@@ -182,7 +212,6 @@ exports.updateApp = async (req, res) => {
         size,
         developer,
         rated_for,
-        apkUrl,
         package_name,
         newVersionCode,
         id,
@@ -191,13 +220,45 @@ exports.updateApp = async (req, res) => {
 
     const updatedApp = updated.rows[0];
 
-    const actionType = isApkUploaded ? "apk_updated" : "metadata_updated";
+    const actionType = hasNewFiles ? "apk_updated" : "metadata_updated";
 
     await db.query(
       `INSERT INTO app_logs (app_id, user_id, action, version)
        VALUES ($1,$2,$3,$4)`,
       [id, req.user?.id || null, actionType, updatedApp.version],
     );
+
+    // ── Insert new files into app_files ───────────────────────────────────
+    if (hasNewFiles) {
+      const detectFileType = (filename) => {
+        const ext = filename.split(".").pop().toLowerCase();
+        if (ext === "apk") return "apk";
+        if (ext === "exe" || ext === "msi") return "exe";
+        if (ext === "sh") return "sh";
+        if (ext === "deb") return "deb";
+        if (ext === "rpm") return "rpm";
+        if (ext === "appimage") return "appimage";
+        if (ext === "dmg") return "dmg";
+        if (ext === "zip") return "zip";
+        return "other";
+      };
+
+      const fileLabels = req.body.file_labels || {};
+      const fileTypes = req.body.file_types || {};
+
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const file = uploadedFiles[i];
+        const fileUrl = await uploadToS3(file, "apps");
+        const type = fileTypes[i] || detectFileType(file.originalname);
+        const label = fileLabels[i] || file.originalname;
+
+        await db.query(
+          `INSERT INTO app_files (app_id, url, type, label)
+           VALUES ($1, $2, $3, $4)`,
+          [id, fileUrl, type, label],
+        );
+      }
+    }
 
     if (screenshots.length > 0) {
       const existingImages = await db.query(
@@ -209,7 +270,7 @@ exports.updateApp = async (req, res) => {
 
       for (let i = 0; i < screenshots.length; i++) {
         const img = screenshots[i];
-        const imageUrl = `/uploads/screenshots/${img.filename}`;
+        const imageUrl = await uploadToS3(img, "screenshots");
 
         await db.query(
           "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
@@ -250,14 +311,14 @@ exports.uploadAppFiles = async (req, res) => {
   try {
     const appId = req.params.id;
 
-    const getFilePath = (fileArray) => {
+    const uploadFile = async (fileArray, folder) => {
       if (!fileArray || fileArray.length === 0) return null;
-      return "/" + fileArray[0].path.replace(/\\/g, "/");
+      return await uploadToS3(fileArray[0], folder);
     };
 
-    const androidUrl = getFilePath(req.files?.apk);
-    const windowsUrl = getFilePath(req.files?.windows);
-    const linuxUrl = getFilePath(req.files?.linux);
+    const androidUrl = await uploadFile(req.files?.apk, "apps");
+    const windowsUrl = await uploadFile(req.files?.windows, "apps");
+    const linuxUrl = await uploadFile(req.files?.linux, "apps");
 
     let fields = [];
     let values = [];

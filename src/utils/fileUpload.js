@@ -1,30 +1,8 @@
 const multer = require("multer");
 const path = require("path");
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    if (file.fieldname === "icon") {
-      cb(null, "uploads/icons");
-    } else if (file.fieldname === "screenshots") {
-      cb(null, "uploads/screenshots");
-    } else if (file.fieldname === "apk") {
-      cb(null, "uploads/apks");
-    } else if (file.fieldname === "windows") {
-      cb(null, "uploads/windows");
-    } else if (file.fieldname === "linux") {
-      cb(null, "uploads/linux_apps");
-    } else if (file.fieldname === "profile_image") {
-      cb(null, "uploads/profiles");
-    } else {
-      cb(new Error("Invalid field name"), null);
-    }
-  },
-
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + "-" + file.originalname;
-    cb(null, uniqueName);
-  },
-});
+// Use memory storage instead of disk storage
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
@@ -41,6 +19,7 @@ const upload = multer({
     const exeExt = [".exe"];
     const linuxExt = [".appimage", ".deb"];
 
+    // Validate images
     if (
       ["icon", "screenshots", "profile_image"].includes(file.fieldname) &&
       imageExt.includes(ext)
@@ -48,15 +27,11 @@ const upload = multer({
       return cb(null, true);
     }
 
-    if (file.fieldname === "apk" && apkExt.includes(ext)) {
-      return cb(null, true);
-    }
-
-    if (file.fieldname === "windows" && exeExt.includes(ext)) {
-      return cb(null, true);
-    }
-
-    if (file.fieldname === "linux" && linuxExt.includes(ext)) {
+    // Validate app files
+    if (
+      file.fieldname === "files" &&
+      [...apkExt, ...exeExt, ...linuxExt].includes(ext)
+    ) {
       return cb(null, true);
     }
 
