@@ -20,16 +20,28 @@ exports.createApp = async (req, res) => {
 
     const icon = req.files?.icon?.[0];
     const screenshots = req.files?.screenshots || [];
-    // All binaries come through the "files" field — multer only accepts this fieldname
     const uploadedFiles = req.files?.files || [];
 
-    if (!name || !icon || !package_name || !version_code) {
+    // Accept direct S3 URLs or fall back to multer
+    const directUrls = req.body.file_urls
+      ? Array.isArray(req.body.file_urls)
+        ? req.body.file_urls
+        : [req.body.file_urls]
+      : [];
+
+    if (!name || !package_name || !version_code) {
       return res.status(400).json({
-        error: "Name, icon, package_name and version_code are required",
+        error: "Name, package_name and version_code are required",
       });
     }
 
-    const iconUrl = await uploadToS3(icon, "icons");
+    // ── Icon: prefer direct S3 URL, fall back to multer ───────────────────
+    const iconUrl =
+      req.body.icon_url || (icon ? await uploadToS3(icon, "icons") : null);
+
+    if (!iconUrl) {
+      return res.status(400).json({ error: "Icon is required" });
+    }
 
     const appResult = await db.query(
       `INSERT INTO apps 
@@ -73,7 +85,9 @@ exports.createApp = async (req, res) => {
     }
 
     // ── Insert each uploaded file into app_files ───────────────────────────
-    if (uploadedFiles.length > 0) {
+    const totalFiles = Math.max(uploadedFiles.length, directUrls.length);
+
+    if (totalFiles > 0) {
       const detectFileType = (filename) => {
         const ext = filename.split(".").pop().toLowerCase();
         if (ext === "apk") return "apk";
@@ -87,15 +101,26 @@ exports.createApp = async (req, res) => {
         return "other";
       };
 
-      // file_labels and file_types sent as indexed fields from Flutter
       const fileLabels = req.body.file_labels || {};
       const fileTypes = req.body.file_types || {};
 
-      for (let i = 0; i < uploadedFiles.length; i++) {
-        const file = uploadedFiles[i];
-        const fileUrl = await uploadToS3(file, "apps");
-        const type = fileTypes[i] || detectFileType(file.originalname);
-        const label = fileLabels[i] || file.originalname;
+      for (let i = 0; i < totalFiles; i++) {
+        let fileUrl;
+        let fileName;
+
+        if (directUrls[i]) {
+          // NEW FLOW: file already uploaded directly to S3
+          fileUrl = directUrls[i];
+          fileName = directUrls[i].split("/").pop();
+        } else {
+          // OLD FLOW: file came through multer
+          const file = uploadedFiles[i];
+          fileUrl = await uploadToS3(file, "apps");
+          fileName = file.originalname;
+        }
+
+        const type = fileTypes[i] || detectFileType(fileName);
+        const label = fileLabels[i] || fileName;
 
         await db.query(
           `INSERT INTO app_files (app_id, url, type, label)
@@ -111,13 +136,26 @@ exports.createApp = async (req, res) => {
       [appId, req.user?.id || null, "uploaded", version],
     );
 
-    for (let i = 0; i < screenshots.length; i++) {
-      const img = screenshots[i];
-      const imageUrl = await uploadToS3(img, "screenshots");
+    // ── Screenshots: prefer direct S3 URLs, fall back to multer ──────────
+    const screenshotUrls = req.body.screenshot_urls
+      ? Array.isArray(req.body.screenshot_urls)
+        ? req.body.screenshot_urls
+        : [req.body.screenshot_urls]
+      : [];
 
+    for (let i = 0; i < screenshotUrls.length; i++) {
       await db.query(
         "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
-        [appId, imageUrl, i],
+        [appId, screenshotUrls[i], i],
+      );
+    }
+
+    // Old multer flow (kept for compatibility)
+    for (let i = 0; i < screenshots.length; i++) {
+      const imageUrl = await uploadToS3(screenshots[i], "screenshots");
+      await db.query(
+        "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
+        [appId, imageUrl, screenshotUrls.length + i],
       );
     }
 
@@ -173,18 +211,29 @@ exports.updateApp = async (req, res) => {
     const screenshots = req.files?.screenshots || [];
     const uploadedFiles = req.files?.files || [];
 
+    // Accept direct S3 URLs or fall back to multer
+    const directUrls = req.body.file_urls
+      ? Array.isArray(req.body.file_urls)
+        ? req.body.file_urls
+        : [req.body.file_urls]
+      : [];
+
     const existing = await db.query("SELECT * FROM apps WHERE id = $1", [id]);
 
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: "App not found" });
     }
 
+    // ── Icon: prefer direct S3 URL, fall back to multer, then existing ────
     let iconUrl = existing.rows[0].icon_url;
-    if (icon) {
+    if (req.body.icon_url) {
+      iconUrl = req.body.icon_url;
+    } else if (icon) {
       iconUrl = await uploadToS3(icon, "icons");
     }
 
-    const hasNewFiles = uploadedFiles.length > 0;
+    const totalFiles = Math.max(uploadedFiles.length, directUrls.length);
+    const hasNewFiles = totalFiles > 0;
 
     let newVersionCode = existing.rows[0].version_code;
     if (hasNewFiles) {
@@ -246,11 +295,22 @@ exports.updateApp = async (req, res) => {
       const fileLabels = req.body.file_labels || {};
       const fileTypes = req.body.file_types || {};
 
-      for (let i = 0; i < uploadedFiles.length; i++) {
-        const file = uploadedFiles[i];
-        const fileUrl = await uploadToS3(file, "apps");
-        const type = fileTypes[i] || detectFileType(file.originalname);
-        const label = fileLabels[i] || file.originalname;
+      for (let i = 0; i < totalFiles; i++) {
+        let fileUrl;
+        let fileName;
+
+        if (directUrls[i]) {
+          fileUrl = directUrls[i];
+          fileName = directUrls[i].split("/").pop();
+        } else {
+          // OLD FLOW: file came through multer
+          const file = uploadedFiles[i];
+          fileUrl = await uploadToS3(file, "apps");
+          fileName = file.originalname;
+        }
+
+        const type = fileTypes[i] || detectFileType(fileName);
+        const label = fileLabels[i] || fileName;
 
         await db.query(
           `INSERT INTO app_files (app_id, url, type, label)
@@ -260,18 +320,38 @@ exports.updateApp = async (req, res) => {
       }
     }
 
+    // ── Screenshots: prefer direct S3 URLs, fall back to multer ──────────
+    const screenshotUrls = req.body.screenshot_urls
+      ? Array.isArray(req.body.screenshot_urls)
+        ? req.body.screenshot_urls
+        : [req.body.screenshot_urls]
+      : [];
+
+    if (screenshotUrls.length > 0) {
+      const existingImages = await db.query(
+        "SELECT COUNT(*) FROM app_images WHERE app_id = $1",
+        [id],
+      );
+      const currentCount = parseInt(existingImages.rows[0].count);
+
+      for (let i = 0; i < screenshotUrls.length; i++) {
+        await db.query(
+          "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
+          [id, screenshotUrls[i], currentCount + i],
+        );
+      }
+    }
+
+    // Old multer flow
     if (screenshots.length > 0) {
       const existingImages = await db.query(
         "SELECT COUNT(*) FROM app_images WHERE app_id = $1",
         [id],
       );
-
       const currentCount = parseInt(existingImages.rows[0].count);
 
       for (let i = 0; i < screenshots.length; i++) {
-        const img = screenshots[i];
-        const imageUrl = await uploadToS3(img, "screenshots");
-
+        const imageUrl = await uploadToS3(screenshots[i], "screenshots");
         await db.query(
           "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
           [id, imageUrl, currentCount + i],

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const upload = require("../utils/fileUpload");
+const { getUploadUrl } = require("../controllers/presignedController");
 
 const {
   createApp,
@@ -47,5 +48,7 @@ router.put(
 router.delete("/apps/:id", authenticate, authorize("admin"), deleteApp);
 
 router.get("/app-logs", authenticate, authorize("admin"), getAppLogs);
+
+router.post("/presigned-url", authenticate, authorize("admin"), getUploadUrl);
 
 module.exports = router;
