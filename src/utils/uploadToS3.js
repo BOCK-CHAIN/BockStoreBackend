@@ -11,7 +11,7 @@ const s3 = new S3Client({
 
 const uploadToS3 = async (file, folder = "") => {
   try {
-    const fileKey = `${folder}/${uuidv4()}-${file.originalname}`;
+    const fileKey = `${folder}/${randomUUID()}-${file.originalname}`;
 
     const params = {
       Bucket: process.env.S3_BUCKET_NAME,
