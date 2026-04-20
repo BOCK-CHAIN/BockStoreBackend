@@ -1,5 +1,5 @@
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
-const { v4: uuidv4 } = require("uuid");
+const { randomUUID } = require("crypto");
 
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
