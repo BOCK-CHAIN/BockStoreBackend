@@ -22,7 +22,9 @@ app.use("/api/admin", adminRoutes);
 //app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 app.get("/", (req, res) => {
-  res.json({ message: "Play Store API is running" });
+  res.json({
+    message: "Bock Store API is running and ready to serve requests",
+  });
 });
 
 module.exports = app;
