@@ -39,7 +39,7 @@ router.get("/developer", getDeveloper);
 router.get("/:id/versions", authenticate, getAppVersions);
 
 // Download app with rate limiting
-router.get("/:id/download", downloadLimiter, authenticate, downloadApp);
+router.get("/:id/download", downloadLimiter, downloadApp);
 
 // Get app details
 router.get("/:id", optionalAuth, getAppById);
