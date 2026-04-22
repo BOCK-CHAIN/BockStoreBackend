@@ -280,9 +280,6 @@ exports.downloadApp = async (req, res) => {
       [id],
     );
 
-    // --- CHANGED: Track installation for all platform-native installer types,
-    //     not just APK. INSTALLABLE_TYPES covers apk, exe, sh, deb, rpm, dmg.
-    //     zip and "other" are intentionally excluded as they are not installers.
     if (req.user && INSTALLABLE_TYPES.has(chosen.type)) {
       await db.query(
         `INSERT INTO user_apps (user_id, app_id, installed_version_code)
@@ -295,7 +292,7 @@ exports.downloadApp = async (req, res) => {
     // --- END CHANGED
 
     return res.json({
-      download_url: `${process.env.BASE_URL}${chosen.url}`,
+      download_url: chosen.url,
       file: {
         id: chosen.id,
         type: chosen.type,
