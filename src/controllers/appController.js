@@ -1,6 +1,6 @@
 const db = require("../config/db");
 const path = require("path");
-
+const { getSignedDownloadUrl } = require("../utils/getPresignedUrl");
 function detectFileType(url = "") {
   const ext = path.extname(url).toLowerCase().replace(".", "");
   const typeMap = {
@@ -261,13 +261,11 @@ exports.downloadApp = async (req, res) => {
       if (!targetType) {
         return res.status(400).json({ error: "Invalid platform" });
       }
-      // Prefer the latest (non-old) file of the target type
       chosen =
         allFiles.find((f) => f.type === targetType && !f.is_old) ||
         allFiles.find((f) => f.type === targetType) ||
         allFiles[0];
     } else {
-      // Default: pick the first non-old file
       chosen = allFiles.find((f) => !f.is_old) || allFiles[0];
     }
 
@@ -289,10 +287,12 @@ exports.downloadApp = async (req, res) => {
         [req.user.id, id, appRow.version_code],
       );
     }
-    // --- END CHANGED
+
+    // Generate a signed GET URL so Dio can download from private S3
+    const signedUrl = await getSignedDownloadUrl(chosen.url);
 
     return res.json({
-      download_url: chosen.url,
+      download_url: signedUrl,
       file: {
         id: chosen.id,
         type: chosen.type,
