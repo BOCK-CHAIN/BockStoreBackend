@@ -26,20 +26,20 @@ const downloadLimiter = rateLimit({
 // User activity
 router.get("/user/activity", getUserActivity);
 
-// Fetch all apps
-router.get("/", getAllApps);
+// Fetch all apps (optionalAuth so logged-in users see their install status)
+router.get("/", optionalAuth, getAllApps);
 
-// Developer-specific apps
+// My installed apps
 router.get("/my-apps", authenticate, getMyApps);
 
 // Developer details
 router.get("/developer", getDeveloper);
 
-// Manage Versions (Google Drive–style feature)
+// Manage Versions
 router.get("/:id/versions", authenticate, getAppVersions);
 
-// Download app with rate limiting
-router.get("/:id/download", downloadLimiter, downloadApp);
+// Download app — optionalAuth so install is tracked when user is logged in
+router.get("/:id/download", downloadLimiter, optionalAuth, downloadApp);
 
 // Get app details
 router.get("/:id", optionalAuth, getAppById);

@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const path = require("path");
 const { getSignedDownloadUrl } = require("../utils/getPresignedUrl");
+
 function detectFileType(url = "") {
   const ext = path.extname(url).toLowerCase().replace(".", "");
   const typeMap = {
@@ -15,21 +16,8 @@ function detectFileType(url = "") {
   return typeMap[ext] || "other";
 }
 
-/**
- * File types that represent a platform-native installer and should be
- * tracked as an "installation" in user_apps.
- *
- * zip / other are intentionally excluded because they are generic archives
- * that do not map cleanly to an installed application.
- */
 const INSTALLABLE_TYPES = new Set(["apk", "exe", "sh", "deb", "rpm", "dmg"]);
 
-/**
- * Builds the files array and marks older versions of each file type as `is_old: true`.
- * The most recently uploaded file per type (determined by `id` desc, or `created_at`
- * if available) is considered current. All others of the same type are marked old.
- * Files are sorted so the latest per type comes first, followed by old versions.
- */
 function buildFilesArray(appRow, appFileRows = []) {
   const files = [];
 
@@ -39,12 +27,10 @@ function buildFilesArray(appRow, appFileRows = []) {
       url: f.url,
       type: f.type || detectFileType(f.url),
       label: f.label || f.url,
-      // Use created_at if present, otherwise fall back to id for ordering
       _sortKey: f.created_at ? new Date(f.created_at).getTime() : f.id,
     });
   }
 
-  // Backward-compat: fold legacy columns in only when no app_files rows exist
   if (files.length === 0) {
     const legacy = [
       { url: appRow.android_url, label: "Android APK" },
@@ -63,11 +49,9 @@ function buildFilesArray(appRow, appFileRows = []) {
         });
       }
     }
-    // Legacy files have no versioning concept — none are marked old
     return files.map(({ _sortKey, ...f }) => ({ ...f, is_old: false }));
   }
 
-  // Find the latest _sortKey per type — that file is "current"
   const latestKeyByType = {};
   for (const f of files) {
     if (
@@ -78,7 +62,6 @@ function buildFilesArray(appRow, appFileRows = []) {
     }
   }
 
-  // Annotate each file and sort: latest per type first, then old versions
   const annotated = files.map((f) => ({
     id: f.id,
     url: f.url,
@@ -88,7 +71,6 @@ function buildFilesArray(appRow, appFileRows = []) {
     _sortKey: f._sortKey,
   }));
 
-  // Sort: current files (is_old=false) before old, then by sortKey desc within each group
   annotated.sort((a, b) => {
     if (a.is_old !== b.is_old) return a.is_old ? 1 : -1;
     return b._sortKey - a._sortKey;
@@ -252,15 +234,12 @@ exports.downloadApp = async (req, res) => {
 
     if (file_id) {
       chosen = allFiles.find((f) => String(f.id) === String(file_id));
-      if (!chosen) {
-        return res.status(404).json({ error: "File not found" });
-      }
+      if (!chosen) return res.status(404).json({ error: "File not found" });
     } else if (platform) {
       const platformTypeMap = { android: "apk", windows: "exe", linux: "sh" };
       const targetType = platformTypeMap[platform];
-      if (!targetType) {
+      if (!targetType)
         return res.status(400).json({ error: "Invalid platform" });
-      }
       chosen =
         allFiles.find((f) => f.type === targetType && !f.is_old) ||
         allFiles.find((f) => f.type === targetType) ||
@@ -278,17 +257,19 @@ exports.downloadApp = async (req, res) => {
       [id],
     );
 
+    // Track install for logged-in users
     if (req.user && INSTALLABLE_TYPES.has(chosen.type)) {
       await db.query(
-        `INSERT INTO user_apps (user_id, app_id, installed_version_code)
-         VALUES ($1, $2, $3)
+        `INSERT INTO user_apps (user_id, app_id, installed_version_code, installed_at)
+         VALUES ($1, $2, $3, NOW())
          ON CONFLICT (user_id, app_id)
-         DO UPDATE SET installed_version_code = $3`,
+         DO UPDATE SET
+           installed_version_code = EXCLUDED.installed_version_code,
+           installed_at = NOW()`,
         [req.user.id, id, appRow.version_code],
       );
     }
 
-    // Generate a signed GET URL so Dio can download from private S3
     const signedUrl = await getSignedDownloadUrl(chosen.url);
 
     return res.json({
@@ -315,7 +296,7 @@ async function getMyApps(req, res) {
       FROM user_apps
       JOIN apps ON apps.id = user_apps.app_id
       WHERE user_apps.user_id = $1
-      ORDER BY installed_at DESC
+      ORDER BY user_apps.installed_at DESC NULLS LAST
       `,
       [userId],
     );
