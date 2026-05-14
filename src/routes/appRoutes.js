@@ -24,7 +24,7 @@ const downloadLimiter = rateLimit({
 });
 
 // User activity
-router.get("/user/activity", getUserActivity);
+router.get("/user/activity", authenticate, getUserActivity);
 
 // Fetch all apps (optionalAuth so logged-in users see their install status)
 router.get("/", optionalAuth, getAllApps);

@@ -310,18 +310,23 @@ exports.getMyApps = getMyApps;
 
 exports.getUserActivity = async (req, res) => {
   try {
-    const result = await db.query(`
+    const result = await db.query(
+      `
       SELECT
+        apps.id AS app_id,
         apps.name AS app_name,
         app_logs.action,
         app_logs.version,
         app_logs.created_at
       FROM app_logs
       JOIN apps ON apps.id = app_logs.app_id
-      WHERE app_logs.action IN ('apk_updated', 'uploaded')
+      WHERE app_logs.user_id = $1
+        AND app_logs.action IN ('apk_updated', 'uploaded')
       ORDER BY app_logs.created_at DESC
       LIMIT 20
-    `);
+    `,
+      [req.user.id],
+    );
     res.json(result.rows);
   } catch (err) {
     console.error("USER ACTIVITY ERROR:", err);

@@ -11,12 +11,15 @@ const {
   uploadAppFiles,
 } = require("../controllers/adminController");
 
-const { authenticate, authorize } = require("../middleware/authMiddleware");
+const {
+  authenticate,
+  requireOwnership,
+} = require("../middleware/authMiddleware");
 
+// Any logged-in user can upload a new app
 router.post(
   "/apps",
   authenticate,
-  authorize("admin"),
   upload.fields([
     { name: "icon", maxCount: 1 },
     { name: "screenshots", maxCount: 5 },
@@ -25,10 +28,11 @@ router.post(
   createApp,
 );
 
+// Only the app's owner can update it
 router.put(
   "/apps/:id",
   authenticate,
-  authorize("admin"),
+  requireOwnership,
   upload.fields([
     { name: "icon", maxCount: 1 },
     { name: "screenshots", maxCount: 5 },
@@ -37,18 +41,22 @@ router.put(
   updateApp,
 );
 
+// Only the app's owner can upload new files to it
 router.put(
   "/apps/:id/upload",
   authenticate,
-  authorize("admin"),
+  requireOwnership,
   upload.fields([{ name: "files", maxCount: 10 }]),
   uploadAppFiles,
 );
 
-router.delete("/apps/:id", authenticate, authorize("admin"), deleteApp);
+// Only the app's owner can delete it
+router.delete("/apps/:id", authenticate, requireOwnership, deleteApp);
 
-router.get("/app-logs", authenticate, authorize("admin"), getAppLogs);
+// Each user sees logs only for their own apps
+router.get("/app-logs", authenticate, getAppLogs);
 
-router.post("/presigned-url", authenticate, authorize("admin"), getUploadUrl);
+// Any logged-in user can get a presigned URL to upload to S3
+router.post("/presigned-url", authenticate, getUploadUrl);
 
 module.exports = router;

@@ -22,7 +22,6 @@ exports.createApp = async (req, res) => {
     const screenshots = req.files?.screenshots || [];
     const uploadedFiles = req.files?.files || [];
 
-    // Accept direct S3 URLs or fall back to multer
     const directUrls = req.body.file_urls
       ? Array.isArray(req.body.file_urls)
         ? req.body.file_urls
@@ -35,7 +34,6 @@ exports.createApp = async (req, res) => {
       });
     }
 
-    // ── Icon: prefer direct S3 URL, fall back to multer ───────────────────
     const iconUrl =
       req.body.icon_url || (icon ? await uploadToS3(icon, "icons") : null);
 
@@ -43,11 +41,12 @@ exports.createApp = async (req, res) => {
       return res.status(400).json({ error: "Icon is required" });
     }
 
+    // uploaded_by is stamped from the authenticated user
     const appResult = await db.query(
       `INSERT INTO apps 
-   (name, description, icon_url, version, size, developer, rated_for, package_name, version_code, category) 
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) 
-   RETURNING *`,
+       (name, description, icon_url, version, size, developer, rated_for, package_name, version_code, category, uploaded_by) 
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) 
+       RETURNING *`,
       [
         name,
         description,
@@ -59,12 +58,13 @@ exports.createApp = async (req, res) => {
         package_name,
         version_code,
         category,
+        req.user.id,
       ],
     );
 
     const appId = appResult.rows[0].id;
 
-    // ── Developer insert/update (bio support) ──────────────────────────────
+    // Developer insert/update (bio support)
     if (developer) {
       if (bio && bio.trim().length > 0) {
         await db.query(
@@ -84,7 +84,7 @@ exports.createApp = async (req, res) => {
       }
     }
 
-    // ── Insert each uploaded file into app_files ───────────────────────────
+    // Insert each uploaded file into app_files
     const totalFiles = Math.max(uploadedFiles.length, directUrls.length);
 
     if (totalFiles > 0) {
@@ -109,11 +109,9 @@ exports.createApp = async (req, res) => {
         let fileName;
 
         if (directUrls[i]) {
-          // NEW FLOW: file already uploaded directly to S3
           fileUrl = directUrls[i];
           fileName = directUrls[i].split("/").pop();
         } else {
-          // OLD FLOW: file came through multer
           const file = uploadedFiles[i];
           fileUrl = await uploadToS3(file, "apps");
           fileName = file.originalname;
@@ -136,7 +134,7 @@ exports.createApp = async (req, res) => {
       [appId, req.user?.id || null, "uploaded", version],
     );
 
-    // ── Screenshots: prefer direct S3 URLs, fall back to multer ──────────
+    // Screenshots: prefer direct S3 URLs, fall back to multer
     const screenshotUrls = req.body.screenshot_urls
       ? Array.isArray(req.body.screenshot_urls)
         ? req.body.screenshot_urls
@@ -150,7 +148,6 @@ exports.createApp = async (req, res) => {
       );
     }
 
-    // Old multer flow (kept for compatibility)
     for (let i = 0; i < screenshots.length; i++) {
       const imageUrl = await uploadToS3(screenshots[i], "screenshots");
       await db.query(
@@ -162,11 +159,8 @@ exports.createApp = async (req, res) => {
     res.status(201).json(appResult.rows[0]);
   } catch (err) {
     if (err.code === "23505") {
-      return res.status(400).json({
-        error: "Package name already exists",
-      });
+      return res.status(400).json({ error: "Package name already exists" });
     }
-
     console.error("CREATE APP ERROR:", err);
     res.status(500).json({ error: err.message });
   }
@@ -176,9 +170,11 @@ exports.deleteApp = async (req, res) => {
   try {
     const { id } = req.params;
 
+    // uploaded_by check is also enforced here as defense-in-depth
+    // (requireOwnership middleware already blocked unauthorized requests)
     const result = await db.query(
-      "DELETE FROM apps WHERE id = $1 RETURNING *",
-      [id],
+      "DELETE FROM apps WHERE id = $1 AND uploaded_by = $2 RETURNING *",
+      [id, req.user.id],
     );
 
     if (result.rows.length === 0) {
@@ -211,20 +207,19 @@ exports.updateApp = async (req, res) => {
     const screenshots = req.files?.screenshots || [];
     const uploadedFiles = req.files?.files || [];
 
-    // Accept direct S3 URLs or fall back to multer
     const directUrls = req.body.file_urls
       ? Array.isArray(req.body.file_urls)
         ? req.body.file_urls
         : [req.body.file_urls]
       : [];
 
+    // requireOwnership already confirmed ownership; just fetch existing row
     const existing = await db.query("SELECT * FROM apps WHERE id = $1", [id]);
 
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: "App not found" });
     }
 
-    // ── Icon: prefer direct S3 URL, fall back to multer, then existing ────
     let iconUrl = existing.rows[0].icon_url;
     if (req.body.icon_url) {
       iconUrl = req.body.icon_url;
@@ -268,7 +263,6 @@ exports.updateApp = async (req, res) => {
     );
 
     const updatedApp = updated.rows[0];
-
     const actionType = hasNewFiles ? "apk_updated" : "metadata_updated";
 
     await db.query(
@@ -277,7 +271,7 @@ exports.updateApp = async (req, res) => {
       [id, req.user?.id || null, actionType, updatedApp.version],
     );
 
-    // ── Insert new files into app_files ───────────────────────────────────
+    // Insert new files into app_files
     if (hasNewFiles) {
       const detectFileType = (filename) => {
         const ext = filename.split(".").pop().toLowerCase();
@@ -303,7 +297,6 @@ exports.updateApp = async (req, res) => {
           fileUrl = directUrls[i];
           fileName = directUrls[i].split("/").pop();
         } else {
-          // OLD FLOW: file came through multer
           const file = uploadedFiles[i];
           fileUrl = await uploadToS3(file, "apps");
           fileName = file.originalname;
@@ -320,7 +313,7 @@ exports.updateApp = async (req, res) => {
       }
     }
 
-    // ── Screenshots: prefer direct S3 URLs, fall back to multer ──────────
+    // Screenshots: prefer direct S3 URLs, fall back to multer
     const screenshotUrls = req.body.screenshot_urls
       ? Array.isArray(req.body.screenshot_urls)
         ? req.body.screenshot_urls
@@ -333,7 +326,6 @@ exports.updateApp = async (req, res) => {
         [id],
       );
       const currentCount = parseInt(existingImages.rows[0].count);
-
       for (let i = 0; i < screenshotUrls.length; i++) {
         await db.query(
           "INSERT INTO app_images (app_id, image_url, display_order) VALUES ($1,$2,$3)",
@@ -342,14 +334,12 @@ exports.updateApp = async (req, res) => {
       }
     }
 
-    // Old multer flow
     if (screenshots.length > 0) {
       const existingImages = await db.query(
         "SELECT COUNT(*) FROM app_images WHERE app_id = $1",
         [id],
       );
       const currentCount = parseInt(existingImages.rows[0].count);
-
       for (let i = 0; i < screenshots.length; i++) {
         const imageUrl = await uploadToS3(screenshots[i], "screenshots");
         await db.query(
@@ -368,17 +358,20 @@ exports.updateApp = async (req, res) => {
 
 exports.getAppLogs = async (req, res) => {
   try {
-    const result = await db.query(`
-      SELECT 
+    // Each user only sees logs for apps they uploaded
+    const result = await db.query(
+      `SELECT 
         app_logs.id,
         app_logs.action,
         app_logs.version,
         app_logs.created_at,
         apps.name AS app_name
-      FROM app_logs
-      JOIN apps ON apps.id = app_logs.app_id
-      ORDER BY app_logs.created_at DESC
-    `);
+       FROM app_logs
+       JOIN apps ON apps.id = app_logs.app_id
+       WHERE apps.uploaded_by = $1
+       ORDER BY app_logs.created_at DESC`,
+      [req.user.id],
+    );
 
     res.json(result.rows);
   } catch (err) {
@@ -391,6 +384,7 @@ exports.uploadAppFiles = async (req, res) => {
   try {
     const appId = req.params.id;
 
+    // requireOwnership already confirmed this user owns the app
     const uploadFile = async (fileArray, folder) => {
       if (!fileArray || fileArray.length === 0) return null;
       return await uploadToS3(fileArray[0], folder);
@@ -408,12 +402,10 @@ exports.uploadAppFiles = async (req, res) => {
       fields.push(`android_url = $${index++}`);
       values.push(androidUrl);
     }
-
     if (windowsUrl) {
       fields.push(`windows_url = $${index++}`);
       values.push(windowsUrl);
     }
-
     if (linuxUrl) {
       fields.push(`linux_url = $${index++}`);
       values.push(linuxUrl);
@@ -432,9 +424,7 @@ exports.uploadAppFiles = async (req, res) => {
 
     if (androidUrl) {
       await db.query(
-        `UPDATE apps 
-         SET version_code = version_code + 1 
-         WHERE id = $1`,
+        `UPDATE apps SET version_code = version_code + 1 WHERE id = $1`,
         [appId],
       );
     }
