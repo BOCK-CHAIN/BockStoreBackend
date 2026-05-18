@@ -5,10 +5,10 @@ const {
   updateProfileImage,
   deleteAccount,
   getUserByName,
+  getProfileImagePresignedUrl,
 } = require("../controllers/authController");
 
 const { authenticate } = require("../middleware/authMiddleware");
-const upload = require("../utils/fileUpload");
 
 const router = express.Router();
 
@@ -16,12 +16,12 @@ router.post("/register", register);
 router.post("/login", login);
 router.delete("/delete-account", authenticate, deleteAccount);
 router.get("/user/:name", getUserByName);
-
-router.put(
-  "/profile-image",
+router.get(
+  "/profile-image/presigned-url",
   authenticate,
-  upload.single("profile_image"),
-  updateProfileImage,
+  getProfileImagePresignedUrl,
 );
+
+router.put("/profile-image", authenticate, updateProfileImage);
 
 module.exports = router;
