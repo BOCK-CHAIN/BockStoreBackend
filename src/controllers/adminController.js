@@ -1,6 +1,57 @@
 const db = require("../config/db");
 const uploadToS3 = require("../utils/uploadToS3");
 
+// Shared helper: detect file type from extension
+const detectFileType = (filename) => {
+  const ext = filename.split(".").pop().toLowerCase();
+  if (ext === "apk") return "apk";
+  if (ext === "exe" || ext === "msi") return "exe";
+  if (ext === "sh") return "sh";
+  if (ext === "deb") return "deb";
+  if (ext === "rpm") return "rpm";
+  if (ext === "appimage") return "appimage";
+  if (ext === "dmg") return "dmg";
+  if (ext === "zip") return "zip";
+  return "other";
+};
+
+// Shared helper: process and insert app files
+// FIX: processes uploadedFiles and directUrls as separate arrays,
+// not zipped by index — avoids the originalname crash.
+const insertAppFiles = async (
+  appId,
+  uploadedFiles,
+  directUrls,
+  fileLabels,
+  fileTypes,
+) => {
+  // Insert direct URL files
+  for (let i = 0; i < directUrls.length; i++) {
+    const fileUrl = directUrls[i];
+    const fileName = fileUrl.split("/").pop();
+    const type = fileTypes[i] || detectFileType(fileName);
+    const label = fileLabels[i] || fileName;
+    await db.query(
+      `INSERT INTO app_files (app_id, url, type, label) VALUES ($1, $2, $3, $4)`,
+      [appId, fileUrl, type, label],
+    );
+  }
+
+  // Insert uploaded (multer) files — offset label/type index by directUrls count
+  for (let i = 0; i < uploadedFiles.length; i++) {
+    const file = uploadedFiles[i];
+    const fileUrl = await uploadToS3(file, "apps");
+    const fileName = file.originalname;
+    const labelIndex = directUrls.length + i;
+    const type = fileTypes[labelIndex] || detectFileType(fileName);
+    const label = fileLabels[labelIndex] || fileName;
+    await db.query(
+      `INSERT INTO app_files (app_id, url, type, label) VALUES ($1, $2, $3, $4)`,
+      [appId, fileUrl, type, label],
+    );
+  }
+};
+
 exports.createApp = async (req, res) => {
   try {
     const {
@@ -41,7 +92,6 @@ exports.createApp = async (req, res) => {
       return res.status(400).json({ error: "Icon is required" });
     }
 
-    // uploaded_by is stamped from the authenticated user
     const appResult = await db.query(
       `INSERT INTO apps 
        (name, description, icon_url, version, size, developer, rated_for, package_name, version_code, category, uploaded_by) 
@@ -64,7 +114,6 @@ exports.createApp = async (req, res) => {
 
     const appId = appResult.rows[0].id;
 
-    // Developer insert/update (bio support)
     if (developer) {
       if (bio && bio.trim().length > 0) {
         await db.query(
@@ -84,48 +133,18 @@ exports.createApp = async (req, res) => {
       }
     }
 
-    // Insert each uploaded file into app_files
-    const totalFiles = Math.max(uploadedFiles.length, directUrls.length);
+    const fileLabels = req.body.file_labels || {};
+    const fileTypes = req.body.file_types || {};
+    const hasNewFiles = uploadedFiles.length > 0 || directUrls.length > 0;
 
-    if (totalFiles > 0) {
-      const detectFileType = (filename) => {
-        const ext = filename.split(".").pop().toLowerCase();
-        if (ext === "apk") return "apk";
-        if (ext === "exe" || ext === "msi") return "exe";
-        if (ext === "sh") return "sh";
-        if (ext === "deb") return "deb";
-        if (ext === "rpm") return "rpm";
-        if (ext === "appimage") return "appimage";
-        if (ext === "dmg") return "dmg";
-        if (ext === "zip") return "zip";
-        return "other";
-      };
-
-      const fileLabels = req.body.file_labels || {};
-      const fileTypes = req.body.file_types || {};
-
-      for (let i = 0; i < totalFiles; i++) {
-        let fileUrl;
-        let fileName;
-
-        if (directUrls[i]) {
-          fileUrl = directUrls[i];
-          fileName = directUrls[i].split("/").pop();
-        } else {
-          const file = uploadedFiles[i];
-          fileUrl = await uploadToS3(file, "apps");
-          fileName = file.originalname;
-        }
-
-        const type = fileTypes[i] || detectFileType(fileName);
-        const label = fileLabels[i] || fileName;
-
-        await db.query(
-          `INSERT INTO app_files (app_id, url, type, label)
-           VALUES ($1, $2, $3, $4)`,
-          [appId, fileUrl, type, label],
-        );
-      }
+    if (hasNewFiles) {
+      await insertAppFiles(
+        appId,
+        uploadedFiles,
+        directUrls,
+        fileLabels,
+        fileTypes,
+      );
     }
 
     await db.query(
@@ -134,7 +153,6 @@ exports.createApp = async (req, res) => {
       [appId, req.user?.id || null, "uploaded", version],
     );
 
-    // Screenshots: prefer direct S3 URLs, fall back to multer
     const screenshotUrls = req.body.screenshot_urls
       ? Array.isArray(req.body.screenshot_urls)
         ? req.body.screenshot_urls
@@ -170,8 +188,6 @@ exports.deleteApp = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // uploaded_by check is also enforced here as defense-in-depth
-    // (requireOwnership middleware already blocked unauthorized requests)
     const result = await db.query(
       "DELETE FROM apps WHERE id = $1 AND uploaded_by = $2 RETURNING *",
       [id, req.user.id],
@@ -200,7 +216,6 @@ exports.updateApp = async (req, res) => {
       developer,
       rated_for,
       package_name,
-      version_code,
     } = req.body;
 
     const icon = req.files?.icon?.[0];
@@ -213,7 +228,6 @@ exports.updateApp = async (req, res) => {
         : [req.body.file_urls]
       : [];
 
-    // requireOwnership already confirmed ownership; just fetch existing row
     const existing = await db.query("SELECT * FROM apps WHERE id = $1", [id]);
 
     if (existing.rows.length === 0) {
@@ -227,13 +241,10 @@ exports.updateApp = async (req, res) => {
       iconUrl = await uploadToS3(icon, "icons");
     }
 
-    const totalFiles = Math.max(uploadedFiles.length, directUrls.length);
-    const hasNewFiles = totalFiles > 0;
-
-    let newVersionCode = existing.rows[0].version_code;
-    if (hasNewFiles) {
-      newVersionCode = newVersionCode + 1;
-    }
+    const hasNewFiles = uploadedFiles.length > 0 || directUrls.length > 0;
+    const newVersionCode = hasNewFiles
+      ? existing.rows[0].version_code + 1
+      : existing.rows[0].version_code;
 
     const updated = await db.query(
       `UPDATE apps
@@ -271,49 +282,18 @@ exports.updateApp = async (req, res) => {
       [id, req.user?.id || null, actionType, updatedApp.version],
     );
 
-    // Insert new files into app_files
     if (hasNewFiles) {
-      const detectFileType = (filename) => {
-        const ext = filename.split(".").pop().toLowerCase();
-        if (ext === "apk") return "apk";
-        if (ext === "exe" || ext === "msi") return "exe";
-        if (ext === "sh") return "sh";
-        if (ext === "deb") return "deb";
-        if (ext === "rpm") return "rpm";
-        if (ext === "appimage") return "appimage";
-        if (ext === "dmg") return "dmg";
-        if (ext === "zip") return "zip";
-        return "other";
-      };
-
       const fileLabels = req.body.file_labels || {};
       const fileTypes = req.body.file_types || {};
-
-      for (let i = 0; i < totalFiles; i++) {
-        let fileUrl;
-        let fileName;
-
-        if (directUrls[i]) {
-          fileUrl = directUrls[i];
-          fileName = directUrls[i].split("/").pop();
-        } else {
-          const file = uploadedFiles[i];
-          fileUrl = await uploadToS3(file, "apps");
-          fileName = file.originalname;
-        }
-
-        const type = fileTypes[i] || detectFileType(fileName);
-        const label = fileLabels[i] || fileName;
-
-        await db.query(
-          `INSERT INTO app_files (app_id, url, type, label)
-           VALUES ($1, $2, $3, $4)`,
-          [id, fileUrl, type, label],
-        );
-      }
+      await insertAppFiles(
+        id,
+        uploadedFiles,
+        directUrls,
+        fileLabels,
+        fileTypes,
+      );
     }
 
-    // Screenshots: prefer direct S3 URLs, fall back to multer
     const screenshotUrls = req.body.screenshot_urls
       ? Array.isArray(req.body.screenshot_urls)
         ? req.body.screenshot_urls
@@ -358,7 +338,6 @@ exports.updateApp = async (req, res) => {
 
 exports.getAppLogs = async (req, res) => {
   try {
-    // Each user only sees logs for apps they uploaded
     const result = await db.query(
       `SELECT 
         app_logs.id,
@@ -384,7 +363,6 @@ exports.uploadAppFiles = async (req, res) => {
   try {
     const appId = req.params.id;
 
-    // requireOwnership already confirmed this user owns the app
     const uploadFile = async (fileArray, folder) => {
       if (!fileArray || fileArray.length === 0) return null;
       return await uploadToS3(fileArray[0], folder);
