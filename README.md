@@ -1,123 +1,95 @@
-# BockStore Backend
+# BockStore Backend — Quick Notes
 
-Simple Node.js backend for the BockStore app. This repo contains the API, database migrations, and helper scripts used to run the service locally and in production.
+Hey — I'm a dev working on this backend. This README is just quick notes to get you started. It might be missing things, but it should be enough to run the app locally.
 
-I wrote this README as a quick guide for other devs to get the project running. If something is missing or out of date, please open an issue or update the file.
+## What this is
 
-## Tech stack
+This repo is a small Node/Express backend for the BockStore app. It has API routes, SQL migrations, and scripts for backups/migrations.
 
-- Node.js (CommonJS)
-- Express
-- PostgreSQL (pg)
-- AWS S3 (for file uploads)
+## Quick tech list
 
-## Repo layout (important folders)
+- Node.js + Express
+- PostgreSQL (`pg`)
+- AWS S3 for file uploads (optional)
 
-- `src/` - application source code (server, controllers, routes, utils)
-- `migrations/` - SQL files to create/update DB schema
-- `rds/` - example env files for RDS / DB
-- `scripts/` - helper scripts for backup, migrate, deploy
-- `uploads/` - stored uploads (icons, apks, screenshots)
+## Important folders
 
-## Prerequisites
+- `src/` — server code, routes, controllers, utils
+- `migrations/` — SQL files to update DB schema
+- `rds/` — example env files (copy these to start)
+- `scripts/` — helper shell scripts
+- `uploads/` — where uploaded files are kept (local)
 
-- Node.js 16+ and npm
-- PostgreSQL database (remote or local)
-- AWS account with S3 access (bucket + credentials) if you want file uploads
+## Setup (what I did locally)
 
-## Environment variables
+1. Copy example env: `cp rds/config-example.env .env` (or create `.env` manually)
+2. Fill these env vars:
 
-Create a `.env` in the project root (you can copy `rds/config-example.env` as a starting point). The main variables this app expects:
+- `DATABASE_URL` e.g. `postgres://user:pass@host:5432/db`
+- `PORT` (optional, default 3000)
+- `JWT_SECRET`
+- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` (only if using S3 uploads)
 
-- `DATABASE_URL` - full Postgres connection string (example: `postgres://user:pass@host:5432/dbname`)
-- `PORT` - optional, defaults to `3000`
-- `JWT_SECRET` - secret used to sign JWT tokens
-- `AWS_REGION` - region for S3 (e.g. `us-east-1`)
-- `AWS_ACCESS_KEY_ID` - S3 access key id
-- `AWS_SECRET_ACCESS_KEY` - S3 secret access key
-- `S3_BUCKET_NAME` - name of the S3 bucket used for uploads
+Don't commit real secrets.
 
-Keep secrets out of git. Do not commit real credentials.
-
-## Install & run locally
-
-1. Clone the repo:
-
-```
-git clone <your-repo-url>
-cd BockStoreBackend
-```
-
-2. Install dependencies:
+3. Install dependencies:
 
 ```
 npm install
 ```
 
-3. Add your `.env` file and fill the variables.
-
-4. Run the app in development:
+4. Start server:
 
 ```
 npm run dev
 ```
 
-The server listens on the value of `PORT` or `3000`.
+Server runs on `PORT` or `3000`.
 
-## Database migrations
+## Database / migrations
 
-This repo includes SQL migration files in `migrations/`. You can apply them with `psql` or a DB tool. Example (replace with your DB connection string):
+I run migrations manually with `psql` for now. Example:
 
 ```
 psql "<your_database_url>" -f migrations/003_create_ratings_table.sql
 ```
 
-Run the migrations in order (000... -> newest). If you have a migration runner, use that instead.
+Apply migrations in order. If you use a tool, use that instead.
 
-## Docker / Compose
+## Docker (optional)
 
-There is a `docker-compose.yml` that can help when containerizing. Example run (local Docker required):
+If you want to use Docker:
 
 ```
 docker-compose up --build
 ```
 
+## Notes about uploads
+
+- Uploads use S3. If you don't have S3 set up, you can skip that part or mock the functions in `src/utils`.
+- Public URLs are generated like: `https://<bucket>.s3.<region>.amazonaws.com/<key>`
+
 ## Scripts
 
-- `scripts/migrate-data.sh` - helper for migrating data (read the script before running)
-- `scripts/deploy-rds.sh` - deploy helpers for RDS
+- `scripts/migrate-data.sh` — migration helper (read before running)
+- `scripts/deploy-rds.sh` — deploy helper for RDS
 
-## Useful notes
+## Git push (simple)
 
-- File uploads use AWS S3. If you don't want uploads, stub or mock the S3 parts in `src/utils`.
-- The API routes are defined under `src/routes/` and implemented in `src/controllers/`.
-
-## How to push changes to GitHub (steps)
-
-1. Make sure you have a remote set up. If you don't, create a repo on GitHub and add the remote:
+If you already have a GitHub repo set up, do:
 
 ```
-git remote add origin git@github.com:yourusername/your-repo.git
-```
-
-2. Stage, commit, and push:
-
-```
-git add .
-git commit -m "Add README and basic project docs"
+git add README.md
+git commit -m "docs: update README"
 git push origin main
 ```
 
-If your default branch is `master` replace `main` with `master`.
+Replace `main` with `master` if needed.
 
-## Want me to commit & push this for you?
+## If something breaks
 
-I can give the exact commands to run or walk you through adding a remote and pushing if you want. If you want me to run git commands here, tell me which remote name and branch to use.
-
-## Contributing
-
-Open an issue or PR for non-trivial changes. For small fixes, fork and send a PR.
+- Check the `.env` values first.
+- Check `src/config/db.js` for DB connection details.
+- Open an issue or ping me — I probably missed something.
 
 ---
-
-_Thanks — junior dev vibes: I tried to keep steps simple and explicit._
