@@ -1,95 +1,144 @@
-# BockStore Backend — Quick Notes
+# BockStore Backend
 
-Hey — I'm a dev working on this backend. This README is just quick notes to get you started. It might be missing things, but it should be enough to run the app locally.
+Production-ready Node.js backend for the BockStore application. This document explains how to set up, run, and maintain the service. The instructions are written at a junior developer level but use professional formatting and conventions.
 
-## What this is
+## Summary
 
-This repo is a small Node/Express backend for the BockStore app. It has API routes, SQL migrations, and scripts for backups/migrations.
+- Purpose: REST API for app distribution and metadata (ratings, uploads, versions).
+- Main features: authentication, file uploads (S3), database migrations, basic admin endpoints.
 
-## Quick tech list
+## Tech stack
 
-- Node.js + Express
+- Node.js (CommonJS)
+- Express
 - PostgreSQL (`pg`)
-- AWS S3 for file uploads (optional)
+- AWS S3 (optional, used for file storage)
 
-## Important folders
+## Repository layout
 
-- `src/` — server code, routes, controllers, utils
-- `migrations/` — SQL files to update DB schema
-- `rds/` — example env files (copy these to start)
-- `scripts/` — helper shell scripts
-- `uploads/` — where uploaded files are kept (local)
+- `src/` — application source (server, controllers, routes, middleware, utils)
+- `migrations/` — SQL migration files (apply in ascending order)
+- `rds/` — example env files for RDS / DB
+- `scripts/` — helper shell scripts (migrate, backup, deploy)
+- `uploads/` — local uploads (development only)
 
-## Setup (what I did locally)
+## Prerequisites
 
-1. Copy example env: `cp rds/config-example.env .env` (or create `.env` manually)
-2. Fill these env vars:
+- Node.js v16+ and npm
+- PostgreSQL instance (local, Docker, or cloud)
+- (Optional) AWS account and S3 bucket for file uploads
 
-- `DATABASE_URL` e.g. `postgres://user:pass@host:5432/db`
-- `PORT` (optional, default 3000)
-- `JWT_SECRET`
-- `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME` (only if using S3 uploads)
+## Environment configuration
 
-Don't commit real secrets.
+Create a `.env` file in the project root. You can use `rds/config-example.env` as a template. Required variables used by the app:
 
-3. Install dependencies:
+- `DATABASE_URL` — Postgres connection string (e.g. `postgres://user:pass@host:5432/db`)
+- `PORT` — port to run the server (default: `3000`)
+- `JWT_SECRET` — secret key for signing JWTs
+- `AWS_REGION` — S3 region (if using uploads)
+- `AWS_ACCESS_KEY_ID` — S3 access key id
+- `AWS_SECRET_ACCESS_KEY` — S3 secret access key
+- `S3_BUCKET_NAME` — S3 bucket name used for uploads
 
+Security: never commit `.env` or real credentials to version control. Use secrets management in production (AWS Secrets Manager, environment variables on the host, etc.).
+
+## Install and run
+
+1. Clone the repo and change directory:
+
+```bash
+git clone <your-repo-url>
+cd BockStoreBackend
 ```
+
+2. Install dependencies:
+
+```bash
 npm install
 ```
 
-4. Start server:
+3. Create `.env` with the required variables.
 
-```
+4. Start in development mode:
+
+```bash
 npm run dev
 ```
 
-Server runs on `PORT` or `3000`.
+The app listens on `PORT` or `3000` by default.
 
-## Database / migrations
+## Database migrations
 
-I run migrations manually with `psql` for now. Example:
+Migration files are in `migrations/`. They are plain SQL and should be applied in order. Example using `psql`:
 
+```bash
+psql "<your_database_url>" -f migrations/00000000000001_initial_schema.sql
+psql "<your_database_url>" -f migrations/001_initial_schema.sql
+# ...continue with later files
 ```
-psql "<your_database_url>" -f migrations/003_create_ratings_table.sql
-```
 
-Apply migrations in order. If you use a tool, use that instead.
+For production, use a proper migration runner (Flyway, Liquibase, or a Node-based migration tool).
 
-## Docker (optional)
+## File uploads
 
-If you want to use Docker:
+- The project supports uploads to S3. Configuration is via the `AWS_*` env variables above.
+- Local development may use `uploads/` for temporary storage.
+- Public object URLs follow the pattern: `https://<S3_BUCKET_NAME>.s3.<AWS_REGION>.amazonaws.com/<key>`.
 
-```
+See `src/utils/uploadToS3.js` and `src/utils/getPresignedUrl.js` for implementation details.
+
+## Docker
+
+There is a `docker-compose.yml` provided for containerized development. Basic usage:
+
+```bash
 docker-compose up --build
 ```
 
-## Notes about uploads
+Adjust the compose file and environment variables for your environment.
 
-- Uploads use S3. If you don't have S3 set up, you can skip that part or mock the functions in `src/utils`.
-- Public URLs are generated like: `https://<bucket>.s3.<region>.amazonaws.com/<key>`
+## Scripts and helpful commands
 
-## Scripts
+- `npm run dev` — start server (development)
+- `scripts/migrate-data.sh` — data migration helper (review before running)
+- `scripts/deploy-rds.sh` — RDS deployment helper
 
-- `scripts/migrate-data.sh` — migration helper (read before running)
-- `scripts/deploy-rds.sh` — deploy helper for RDS
+Inspect scripts before use and run them with appropriate DB credentials.
 
-## Git push (simple)
+## Testing
 
-If you already have a GitHub repo set up, do:
+There are no automated tests included. Add unit and integration tests (Jest, Supertest) before production use.
 
-```
-git add README.md
-git commit -m "docs: update README"
-git push origin main
-```
+## Deployment notes
 
-Replace `main` with `master` if needed.
+- Use environment variables for secrets in production.
+- For relational DB, prefer managed services (RDS) and run migrations as part of deployment pipeline.
+- Store uploaded files in S3 and serve via CDN if needed.
 
-## If something breaks
+## Security and operational considerations
 
-- Check the `.env` values first.
-- Check `src/config/db.js` for DB connection details.
-- Open an issue or ping me — I probably missed something.
+- Rotate `JWT_SECRET` and AWS keys periodically.
+- Limit S3 bucket public access and use least-privilege IAM roles.
+- Add rate limiting and logging for production.
+
+## Contributing
+
+1. Fork the repository.
+2. Create a branch named `feature/<short-description>` or `fix/<short-description>`.
+3. Make changes and keep commits small and focused.
+4. Open a pull request with a clear description and testing notes.
+
+## License
+
+This project uses the ISC license (see `package.json`).
+
+## Contact / Support
+
+If you need help, open an issue or contact the project owner listed in `package.json`.
 
 ---
+
+If you'd like, I can also:
+
+- add a short API reference section (endpoints and example requests), or
+- create a `docs/` folder with more details for maintainers.
